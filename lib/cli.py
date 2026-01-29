@@ -1,110 +1,17 @@
-import click
-from sqlalchemy import func
-
-from db.session import session
-from db.models import Member, Skill, Job
-
-
-# ---------------- CLICK COMMANDS (LOGIC LAYER) ----------------
-
-@click.group()
-def cli():
-    """SkillTrack CLI"""
-    pass
+from helpers import (
+    create_member,
+    get_all_members,
+    get_member_by_id,
+    add_skill_to_member,
+    add_job_to_member,
+    get_earnings
+)
 
 
-@cli.command()
-@click.argument("name")
-@click.argument("location")
-def add_member(name, location):
-    member = Member(name=name, location=location)
-    session.add(member)
-    session.commit()
-    print(f"✅ Member '{name}' added successfully.")
-    print(f"👉 Member ID: {member.id}")
+# ---------- VALIDATION HELPER ----------
+def letters_only(text):
+    return text.replace(" ", "").isalpha()
 
-
-@cli.command()
-def list_members():
-    members = session.query(Member).all()
-    if not members:
-        print("No members found.")
-        return
-
-    for member in members:
-        print(f"{member.id} | {member.name} | {member.location}")
-
-
-@cli.command()
-@click.argument("member_id", type=int)
-@click.argument("skill_name")
-def add_skill(member_id, skill_name):
-    member = session.get(Member, member_id)
-    if not member:
-        print("❌ Error: Member not found.")
-        return
-
-    skill = Skill(name=skill_name, member=member)
-    session.add(skill)
-    session.commit()
-    print(f"✅ Skill '{skill_name}' added to {member.name}.")
-
-
-@cli.command()
-@click.argument("member_id", type=int)
-def list_skills(member_id):
-    member = session.get(Member, member_id)
-
-    if not member:
-        print("❌ Error: Member not found.")
-        return
-
-    if not member.skills:
-        print(f"{member.name} has no skills recorded.")
-        return
-
-    print(f"Skills for {member.name}:")
-    for skill in member.skills:
-        print(f"- {skill.name}")
-
-
-@cli.command()
-@click.argument("member_id", type=int)
-@click.argument("description")
-@click.argument("amount", type=float)
-def add_job(member_id, description, amount):
-    member = session.get(Member, member_id)
-    if not member:
-        print("❌ Error: Member not found.")
-        return
-
-    job = Job(description=description, amount=amount, member=member)
-    session.add(job)
-    session.commit()
-    print(f"💰 Job '{description}' recorded for {member.name}: KES {amount}")
-
-
-@cli.command()
-def earnings():
-    results = (
-        session.query(
-            Member.name,
-            func.sum(Job.amount)
-        )
-        .join(Job)
-        .group_by(Member.id)
-        .all()
-    )
-
-    if not results:
-        print("No earnings recorded yet.")
-        return
-
-    for name, total in results:
-        print(f"{name}: KES {total}")
-
-
-# ---------------- MENU + LOOP (INTERACTION LAYER) ----------------
 
 def menu():
     while True:
@@ -124,21 +31,29 @@ def menu():
             name = input("Enter member name: ").strip()
             location = input("Enter member location: ").strip()
 
-            if not name.isalpha():
+            if not letters_only(name):
                 print("❌ Error: Name must contain letters only.")
                 continue
 
-            if not location.isalpha():
+            if not letters_only(location):
                 print("❌ Error: Location must contain letters only.")
                 continue
 
-            add_member.callback(name, location)
+            member = create_member(name, location)
+            print(f"✅ Member created successfully. ID: {member.id}")
 
         # ---------- LIST MEMBERS ----------
         elif choice == "2":
-            list_members.callback()
+            members = get_all_members()
 
-        # ---------- ADD SKILL ----------
+            if not members:
+                print("No members found.")
+                continue
+
+            for m in members:
+                print(f"{m.id} | {m.name} | {m.location}")
+
+        # ---------- ADD SKILL (WITH DUPLICATE CHECK) ----------
         elif choice == "3":
             try:
                 member_id = int(input("Enter member ID: "))
@@ -148,11 +63,21 @@ def menu():
 
             skill_name = input("Enter skill name: ").strip()
 
-            if not skill_name.isalpha():
+            if not letters_only(skill_name):
                 print("❌ Error: Skill name must contain letters only.")
                 continue
 
-            add_skill.callback(member_id, skill_name)
+            result = add_skill_to_member(member_id, skill_name)
+
+            if result == "member_not_found":
+                print("❌ Error: Member not found.")
+                continue
+
+            if result == "duplicate":
+                print("⚠️ Skill already listed for this member.")
+                continue
+
+            print(f"✅ Skill '{skill_name}' added successfully.")
 
         # ---------- ADD JOB ----------
         elif choice == "4":
@@ -163,8 +88,9 @@ def menu():
                 continue
 
             description = input("Enter job description: ").strip()
-            if not description:
-                print("❌ Error: Job description cannot be empty.")
+
+            if not letters_only(description):
+                print("❌ Error: Job description must contain letters only.")
                 continue
 
             try:
@@ -177,13 +103,26 @@ def menu():
                 print("❌ Error: Amount must be greater than zero.")
                 continue
 
-            add_job.callback(member_id, description, amount)
+            job = add_job_to_member(member_id, description, amount)
 
-        # ---------- EARNINGS ----------
+            if not job:
+                print("❌ Error: Member not found.")
+                continue
+
+            print(f"💰 Job recorded successfully. Amount: KES {amount}")
+
+        # ---------- VIEW EARNINGS ----------
         elif choice == "5":
-            earnings.callback()
+            earnings = get_earnings()
 
-        # ---------- LIST SKILLS ----------
+            if not earnings:
+                print("No earnings recorded yet.")
+                continue
+
+            for name, total in earnings:
+                print(f"{name}: KES {total}")
+
+        # ---------- VIEW MEMBER SKILLS ----------
         elif choice == "6":
             try:
                 member_id = int(input("Enter member ID: "))
@@ -191,7 +130,21 @@ def menu():
                 print("❌ Error: Member ID must be a number.")
                 continue
 
-            list_skills.callback(member_id)
+            member = get_member_by_id(member_id)
+
+            if not member:
+                print("❌ Error: Member not found.")
+                continue
+
+            print(f"\nMember: {member.id} | {member.name}")
+
+            if not member.skills:
+                print("No skills recorded for this member.")
+                continue
+
+            print("Skills:")
+            for s in member.skills:
+                print(f"{s.id} | {s.name}")
 
         # ---------- EXIT ----------
         elif choice == "0":
@@ -202,8 +155,6 @@ def menu():
         else:
             print("❌ Error: Invalid option. Please select a valid menu number.")
 
-
-# ---------------- ENTRY POINT ----------------
 
 if __name__ == "__main__":
     menu()
